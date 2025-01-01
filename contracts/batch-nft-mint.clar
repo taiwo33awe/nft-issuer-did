@@ -41,3 +41,80 @@
 (define-private (is-token-burned? (token-id uint))
   (default-to false (map-get? burned-tokens token-id)))
 
+(define-private (mint-did (uri-data (string-ascii 256)))
+  (let ((new-token-id (+ (var-get last-token-id) u1)))
+    (asserts! (is-valid-uri uri-data) err-invalid-token-uri)
+    (try! (nft-mint? did-nft new-token-id tx-sender))
+    (map-set token-uri new-token-id uri-data)
+    (var-set last-token-id new-token-id)
+    (ok new-token-id)))
+
+(define-private (mint-did-in-batch (uri (string-ascii 256)) (accumulated (list 100 uint)))
+  (match (mint-did uri)
+    success (unwrap-panic (as-max-len? (append accumulated success) u100))
+    error accumulated))
+
+;; Public Functions
+
+(define-public (burn (token-id uint))
+  (let ((token-owner (unwrap! (nft-get-owner? did-nft token-id) err-token-not-found)))
+    (asserts! (is-eq tx-sender token-owner) err-not-token-owner)
+    (asserts! (not (is-token-burned? token-id)) err-already-burned)
+    (try! (nft-burn? did-nft token-id token-owner))
+    (map-set burned-tokens token-id true)
+    (ok true)))
+
+(define-public (transfer (token-id uint) (sender principal) (recipient principal))
+  (begin
+    (asserts! (is-eq recipient tx-sender) err-not-token-owner)
+    (let ((actual-sender (unwrap! (nft-get-owner? did-nft token-id) err-not-token-owner)))
+      (asserts! (is-eq actual-sender sender) err-not-token-owner)
+      (try! (nft-transfer? did-nft token-id sender recipient))
+      (ok true))))
+
+(define-public (update-token-uri (token-id uint) (new-uri (string-ascii 256)))
+  (begin
+    (let ((token-owner (unwrap! (nft-get-owner? did-nft token-id) err-token-not-found)))
+      (asserts! (is-eq token-owner tx-sender) err-not-token-owner-update)
+      (asserts! (is-valid-uri new-uri) err-invalid-token-uri)
+      (map-set token-uri token-id new-uri)
+      (ok true))))
+
+;; Read-Only Functions
+(define-read-only (get-token-uri (token-id uint))
+  (ok (map-get? token-uri token-id)))
+
+(define-read-only (get-owner (token-id uint))
+  (ok (nft-get-owner? did-nft token-id)))
+
+(define-read-only (get-last-token-id)
+  (ok (var-get last-token-id)))
+
+(define-read-only (is-burned (token-id uint))
+  (ok (is-token-burned? token-id)))
+
+(define-read-only (get-batch-token-ids (start-id uint) (count uint))
+  (ok (map uint-to-response 
+    (unwrap-panic (as-max-len? 
+      (list-tokens start-id count) 
+      u100)))))
+
+(define-private (uint-to-response (id uint))
+  {
+    token-id: id,
+    uri: (unwrap-panic (get-token-uri id)),
+    owner: (unwrap-panic (get-owner id)),
+    burned: (unwrap-panic (is-burned id))
+  })
+
+(define-private (list-tokens (start uint) (count uint))
+  (map + 
+    (list start) 
+    (generate-sequence count)))
+
+(define-private (generate-sequence (length uint))
+  (map - (list length)))
+
+;; Contract initialization
+(begin
+  (var-set last-token-id u0))
